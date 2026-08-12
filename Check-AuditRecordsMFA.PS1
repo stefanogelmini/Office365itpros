@@ -76,7 +76,7 @@ ForEach ($User in $Users) {
 }
 
 $Report | Out-GridView
-$Report | Export-CSV -NoTypeInformation $CSVOutputFile
+#$Report | Export-CSV -NoTypeInformation $CSVOutputFile
 [float]$MFACheck = ($MFAUsers/$Users.Count)*100
 $PercentMFAUsers = ($MFAUsers/$Users.Count).toString('P')
 Write-Host ("{0} users of {1} found to use MFA" -f $MFAUsers, $Users.count)
