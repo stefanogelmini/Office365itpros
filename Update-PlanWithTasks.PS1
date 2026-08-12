@@ -3,6 +3,10 @@
 # and use that data to update tasks in a Planner Plan
 # V1.0 19-Feb-2024
 # https://github.com/12Knocksinna/Office365itpros/blob/master/Update-PlanWithTasks.PS1
+# See https://practical365.com/create-planner-tasks-powershell for an article showing how to use the script
+# The signed in user must be a member of the group owning the target plan. If not, use application permissions
+# by signing into the Graph using a client secret/certificate thumbnail and application ID. Make sure that the app has 
+# consent to use the necessary Graph permissions.
 
 Connect-MgGraph -NoWelcome -Scopes Group.Read.All, Tasks.ReadWrite, ServiceMessage.Read.All, User.Read.All
 
@@ -16,7 +20,7 @@ Write-Host ("Staring synchronization run at {0}" -f $Now)
 # announcements to 7 days. If not, use 60 days
 [array]$ProcessedData = Import-CSV $ProcessedDataFile -ErrorAction SilentlyContinue
 If ($ProcessedData) {
-    $CheckDate = (Get-Date).AddDays(7)
+    $CheckDate = (Get-Date).AddDays(-7)
 } Else {
     $CheckDate = (Get-Date).AddDays(-60)
 }
@@ -104,6 +108,7 @@ $GenericTaskData.Add("orderHint"," !")
 $GenericCategoryData = @{}
 $GenericCategoryData.Add("@odata.type", "#microsoft.graph.plannerAppliedCategories")
 
+Write-Host "Examining message center posts..."
 $Report = [System.Collections.Generic.List[Object]]::new()
 ForEach ($Announcement in $Announcements) {
 
@@ -214,11 +219,9 @@ ForEach ($Announcement in $Announcements) {
     $TaskDescription = @{}
     $TaskDescription.Add('description', $TextBody)
 
-    $TaskCategoryParams = @{
-        AppliedCategories = @{
-            ($Category) = $true
-        }
-    }
+    $TaskLabels = @{}
+    $TaskLabels.Add($Category,$true)
+    $TaskLabels
 
     $TaskParameters = @{}
     $TaskParameters.Add('planId',$TargetPlan.Id)
@@ -227,6 +230,8 @@ ForEach ($Announcement in $Announcements) {
     $TaskParameters.Add('assignments', $TaskAssignments)
     $TaskParameters.Add('priority', '5')
     $TaskParameters.Add('startDateTime', $Announcement.LastModifiedDateTime)
+    $TaskParameters.Add('details',$TaskDescription)
+    $TaskParameters.Add('appliedCategories', $TaskLabels)
     # If an end date is given, use it as the due date for the task
     If ($Announcement.EndDateTime) {
         $TaskParameters.Add('dueDateTime', $Announcement.EndDateTime)
@@ -234,12 +239,7 @@ ForEach ($Announcement in $Announcements) {
     
     $NewTask = New-MgPlannerTask -BodyParameter $TaskParameters
     If ($NewTask) {
-        $TaskDetails = Get-MgPlannerTaskDetail -PlannerTaskId $NewTask.Id
-        # Update the new task with a label
-        $Status = Update-MgPlannerTask -PlannerTaskId $NewTask.Id -BodyParameter $TaskCategoryParams -IfMatch $NewTask.additionalProperties.'@odata.etag'
-        # Update the new task with the description
-        $Status = Update-MgPlannerTaskDetail -PlannerTaskId $TaskDetails.Id -BodyParameter $TaskDescription -IfMatch $TaskDetails.additionalProperties.'@odata.etag'
-        Write-Host ("Task {0} assigned to {1}" -f $TaskTitle, $AssignedName)
+        Write-Host ("Task {0} assigned to {1}" -f $TaskTitle, $AssignedName) -ForegroundColor Red
         $DataLine = [PSCustomObject][Ordered]@{
             TaskId          = $Announcement.ID
             Title           = $TaskTitle
@@ -254,7 +254,7 @@ ForEach ($Announcement in $Announcements) {
 # Now we need to check if any changes have happened to tasks in our plan
 # Start off by getting the set of known tasks in the plan
 # We're only interested in incomplete tasks, so that's why we filter out any that are marked as complete
-[array]$CurrentTasks = Get-MgPlannerPlanTask -PlannerPlanId $TargetPlan.Id | Where-Object  {$_.null -eq $_.CompletedDateTime}
+[array]$CurrentTasks = Get-MgPlannerPlanTask -PlannerPlanId $TargetPlan.Id -All -PageSize 999 | Where-Object  {$_.null -eq $_.CompletedDateTime}
 ForEach ($Task in $CurrentTasks) {
     # For each task, get its MC identifier
     $Start = $Task.Title.IndexOf("MC")

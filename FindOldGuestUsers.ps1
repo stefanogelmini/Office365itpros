@@ -1,12 +1,13 @@
 # FindOldGuestUsers.PS1
 # Script to find Guest User Accounts in an Office 365 Tenant that are older than 365 days (update the $GuestAccountAge variable to set a different
 # number of days to check for) and the groups they belong to
-# Script needs to connect to the Microsoft Graph PowerShell SDK Exchange Online PowerShell.
-# https://github.com/12Knocksinna/Office365itpros/blob/master/FindOldGuestUsers.ps1
+# Script needs to connect to the Microsoft Graph PowerShell SDK and Exchange Online PowerShell.
+# GitHub link: https://github.com/12Knocksinna/Office365itpros/blob/master/FindOldGuestUsers.ps1
+# See article at https://office365itpros.com/2019/10/15/report-old-guest-accounts/
 # V2.0 10-Oct-2022
 # V2.1 19-Jul-2022 Updated for Graph SDK V2
 
-Connect-MgGraph -Scopes AuditLog.Read.All, Directory.Read.All
+Connect-MgGraph -Scopes AuditLog.Read.All, Directory.Read.All -NoWelcome
 
 # Set age threshold for reporting a guest account
 [int]$AgeThreshold = 365
@@ -14,7 +15,7 @@ Connect-MgGraph -Scopes AuditLog.Read.All, Directory.Read.All
 $OutputReport = "c:\Temp\OldGuestAccounts.csv"
 # Get all guest accounts in the tenant
 Write-Host "Finding Guest Accounts..."
-[Array]$GuestUsers = Get-MgUser -Filter "userType eq 'Guest'" -All -Property Id, displayName, userPrincipalName, createdDateTime, signInActivity `
+[Array]$GuestUsers = Get-MgUser -Filter "userType eq 'Guest'" -All -PageSize 999 -Property Id, displayName, userPrincipalName, createdDateTime, signInActivity `
     | Sort-Object displayName
 $i = 0; $Report = [System.Collections.Generic.List[Object]]::new()
 # Loop through the guest accounts looking for old accounts 

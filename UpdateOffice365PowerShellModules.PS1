@@ -3,19 +3,31 @@
 # V2.0 4-Dec-2022
 # V2.1 9-Apr-2023
 # V2.2 28-Apr-2023
-# V2.3 9-Jul-2023 (include support for Microsoft Graph PowerShell SDK V2.0)
-# V2.4 12-Aug (make sure that everything works well for PowerShell V5 and V7 )
+# V2.3 9-Jul-2023 include support for Microsoft Graph PowerShell SDK V2.0
+# V2.4 12-Aug-2023 Make sure that everything works well for PowerShell V5 and V7
+# V2.5 25-Oct-2024 Add check for admin rights and PowerShell 7
 # https://github.com/12Knocksinna/Office365itpros/blob/master/UpdateOffice365PowerShellModules.PS1
 # Very simple script to check for updates to a defined set of PowerShell modules used to manage Office 365 services
 # If an update for a module is found, it is downloaded and applied.
 # Once all modules are checked for updates, we remove older versions that might be present on the workstation. V2.1 improves the processing of Microsoft Graph SDK sub-modules
 #  
 
+# Check that we have administrator rights to install and update modules
+$IsAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+If (!$IsAdmin) {
+    Write-Host "You must be signed in as an administrator to update modules" -ForegroundColor Red
+    Break
+}
+If ($Host.Version.Major -lt 7) {
+    Write-Host ("Current version is {0}. This script requires PowerShell 7" -f $Host.Version) -ForegroundColor Red
+    Break
+}
+
 # Define the set of modules installed and updated from the PowerShell Gallery that we want to maintain - edit this set of modules to include the modules 
 # you want to process.
 [int]$InstalledModules = 0; [int]$UpdatedModules = 0; [int]$RemovedModules = 0
-$O365Modules = @("MicrosoftTeams", "Microsoft.Graph", "Microsoft.Graph.Beta", "ExchangeOnlineManagement", "Microsoft.Online.Sharepoint.PowerShell", "ORCA", "Az.Accounts", "Az.Automation", "AIPService", "Az.Keyvault", "Pnp.PowerShell", "MSCommerce", "Microsoft365DSC", "MSAL.PS", "PSWriteHTML", "WhiteboardAdmin", "ImportExcel")
-$O365Modules = $O365Modules | Sort-Object
+$O365Modules = @("Az.Accounts", "Az.Automation", "AIPService", "Az.Keyvault", "MicrosoftTeams", "Microsoft.Graph", "Microsoft.Graph.Beta", "ExchangeOnlineManagement", "Microsoft.Online.Sharepoint.PowerShell", "ORCA",  "Pnp.PowerShell", "Microsoft365DSC", "MSAL.PS", "WhiteboardAdmin", "ImportExcel", "Maester", "Microsoft.Entra", "Microsoft.Entra.Beta", "MSIdentityTools")
+$O365Modules = $O365Modules 
 Write-Host ("Starting up and preparing to process these modules: {0}" -f ($O365Modules -join ", ")) -foregroundcolor Yellow
 [int]$UpdatedModules = 0; [int]$RemovedModules = 0; [int]$InstalledModules = 0
 
@@ -41,7 +53,7 @@ ForEach ($Module in $O365Modules) {
    # No version of the module found. It's in our list, so we install it.
      Write-Host ("No module found on this PC for {0}" -f $Module)
      Write-Host ("Installing module {0}..." -f $Module)  -foregroundcolor Yellow
-     Install-Module $Module -Scope AllUsers -Confirm:$False -AllowClobber -Force
+     Install-Module $Module -Scope AllUsers -Confirm:$False -AllowClobber -Force -SkipPublisherCheck
      $InstalledModules++
    }
 
@@ -53,12 +65,28 @@ ForEach ($Module in $O365Modules) {
       [datetime]$PCModuleDate = $PCModule.PublishedDate
 
       If ($PCModuleDate -eq $CurrentModuleDate) { 
-         Write-Host ("Latest version of {0} is installed on this PC - no need to update" -f $Module) 
+        Write-Host ("Latest version of {0} is installed on this PC - no need to update" -f $Module) 
       } Else {
-         Write-Host ("Updating {0} module to version {1}" -f $Module, $CurrentVersion) -foregroundcolor Yellow
-         Remove-Module $Module -ErrorAction SilentlyContinue
-         Update-Module $Module -Force -Confirm:$False -Scope AllUsers
-         $UpdatedModules++
+        Write-Host ("Updating {0} module to version {1}" -f $Module, $CurrentVersion) -foregroundcolor Yellow
+        Remove-Module $Module -ErrorAction SilentlyContinue 
+        Switch ($Module) {
+          "Maester" { # see https://maester.dev/blog/the-end-of-code-signing/ for Maester issue, so skip the publisher check
+            Uninstall-Module $Module
+            Update-Module $Module -Force -Confirm:$False -Scope AllUsers -AllowPreRelease 
+          }
+          "Pnp.PowerShell" {
+            Uninstall-Module $Module
+            Install-Module $Module -Force -Confirm:$False -Scope AllUsers -SkipPublisherCheck
+          }
+          "MSIdentityTools" {
+            Uninstall-Module $Module
+            Install-Module $Module -Force -Confirm:$False -Scope AllUsers -SkipPublisherCheck
+          }
+          default {
+            Update-Module $Module -Force -Confirm:$False -Scope AllUsers
+          }
+        }
+        $UpdatedModules++
       } # End if 
     }
 } # End ForEach Module
@@ -86,7 +114,7 @@ ForEach ($Module in $ModulesToProcess) {
         [datetime]$VersionDate = $Version.PublishedDate
         If ($VersionDate -lt $MostRecentVersionDate)  { # Old version - remove
            Write-Host ("Uninstalling version {0} of module {1}" -f $Version.Version, $Module) -foregroundcolor Red 
-           Uninstall-Module -Name $Module -RequiredVersion $Version.Version -Force
+           Uninstall-Module -Name $Module -RequiredVersion $Version.Version -Force 
            $RemovedModules++
          } #End if version check
       } # End ForEach versions 
@@ -98,8 +126,8 @@ ForEach ($Module in $ModulesToProcess) {
 
 Write-Host ("Installed modules: {0} Updated modules: {1}  Removed old versions of modules: {2}" -f $InstalledModules, $UpdatedModules, $RemovedModules)
 
-# An example script used to illustrate a concept. More information about the topic can be found in the Office 365 for IT Pros eBook https://gum.co/O365IT/
-# and/or a relevant article on https://office365itpros.com or https://www.practical365.com. See our post about the Office 365 for IT Pros repository 
+# An example script used to illustrate a concept. More information about the topic can be found in the Microsoft 365 for IT Pros eBook https://gum.co/O365IT/
+# and/or a relevant article on https://office365itpros.com or https://www.practical365.com. See our post about the Microsoft 365 for IT Pros repository 
 # https://office365itpros.com/office-365-github-repository/ for information about the scripts we write.
 
 # Do not use our scripts in production until you are satisfied that the code meets the need of your organization. Never run any code downloaded from the Internet without

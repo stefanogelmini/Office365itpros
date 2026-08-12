@@ -1,8 +1,9 @@
 # A script to report the email addresses for Teams channels that are mail-enabled
 # V1.0 August 2019; V2.0 January 2020; V3.0 February 2020 (add pagination support)
 # https://github.com/12Knocksinna/Office365itpros/blob/master/ReportTeamsChannelEmailAddresses.ps1
+# See https://office365itpros.com/2022/08/24/teams-channel-email-addresses/ for an article explaining the script
 
-Cls
+Clear-Host
 # Define the values applicable for the application used to connect to the Graph (these are specific to a tenant)
 $AppId = "s716b32c-0edb-48be-9385-30a9cfd96155"
 $TenantId = "a662313f-14fc-43a2-9a7a-d2e27f4f3478"
@@ -34,14 +35,14 @@ $TeamsHash = @{}
 $Teams.Value.ForEach( {
    $TeamsHash.Add($_.Id, $_.DisplayName) } )
 $NextLink = $Teams.'@Odata.NextLink'
-While ($NextLink -ne $Null) {
+While ($null -ne $Nextlink) {
    $Teams = Invoke-WebRequest -Method GET -Uri $NextLink -ContentType $ctype -Headers $headers | ConvertFrom-Json
    $Teams.Value.ForEach( {
       $TeamsHash.Add($_.Id, $_.DisplayName) } )
    $NextLink = $Teams.'@odata.NextLink' }
 
 # All teams found...
-CLS
+Clear-Host
 Write-Host "Processing" $TeamsHash.Count "Teams..."
 # Loop through each team to examine its channels and discover if any are email-enabled
 $i = 0; $EmailAddresses = 0; $Report = [System.Collections.Generic.List[Object]]::new() # Create output file for report; $ReportLine = $Null
@@ -81,7 +82,7 @@ ForEach ($Team in $TeamsHash.Keys) {
      }
     Catch { Write-Host "Unable to fetch channels for" $Team.DisplayName }
 } 
-$Report | Sort Team | Export-CSV C:\Temp\TeamsChannelsWithEmailAddress.Csv -NoTypeInformation
+$Report | Sort-Object Team | Export-CSV C:\Temp\TeamsChannelsWithEmailAddress.Csv -NoTypeInformation
 Write-Host $EmailAddresses "mail-enabled channels found. Details are in C:\Temp\TeamsChannelsWithEmailAddress.Csv"
 
 # An example script used to illustrate a concept. More information about the topic can be found in the Office 365 for IT Pros eBook https://gum.co/O365IT/
@@ -89,3 +90,35 @@ Write-Host $EmailAddresses "mail-enabled channels found. Details are in C:\Temp\
 
 # Do not use our scripts in production until you are satisfied that the code meets the need of your organization. Never run any code downloaded from the Internet without
 # first validating the code in a non-production environment.
+
+
+# Graph SDK version
+
+[array]$Teams = Get-MgGroup -Filter "resourceProvisioningOptions/Any(x:x eq 'Team')" -All
+If (!($Teams)) {Write-Host "Can't find any teams - exiting"; break} 
+$Teams = $Teams | Sort-Object DisplayName
+$ChannelsList = [System.Collections.Generic.List[Object]]::new()
+[int]$i = 0
+ForEach ($Team in $Teams) {
+   $i++
+   $ProgressBar = "Processing Team " + $Team.DisplayName + " (" + $i + " of " + $Teams.Count + ")"
+   Write-Progress -Activity "Checking Teams Information" -Status $ProgressBar -PercentComplete ($i/$Teams.Count*100)
+   Try {
+      [array]$Channels = Get-MgTeamChannel -Teamid $Team.Id -ErrorAction SilentlyContinue
+      ForEach ($Channel in $Channels) {
+      If ($Channel.Email) {
+         $ChannelLine = [PSCustomObject][Ordered]@{  # Write out details of the private channel and its members
+            Team           = $Team.DisplayName
+            Channel        = $Channel.DisplayName
+            Description    = $Channel.Description
+            EMail          = $Channel.Email
+            Id             = $Channel.Id }
+          $ChannelsList.Add($ChannelLine) } 
+      }  #End Foreach Channel
+   } Catch {
+      Write-Output ("Whoops - had a problem processing the {0} team" -f $Team.displayName)
+   }
+} # End ForEach Team
+# Elminate the General channel
+$TeamsEmailAddresses = $ChannelsList | Where-Object {$_.Email -Like "*.teams.ms"}
+$TeamsEmailAddresses | Out-GridView

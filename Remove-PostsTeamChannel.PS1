@@ -2,6 +2,7 @@
 # A script to demonstrate how to clean out all messages from a channel
 # V1.0 9-Feb-2024
 # https://github.com/12Knocksinna/Office365itpros/blob/master/Remove-PostsTeamChannel.PS1
+# See https://practical365.com/remove-channel-messages/ for more information
 
 Function Get-Response ([string]$Prompt,[int]$NumberPossibleAnswers) {
     # Helper function to prompt a question and get a response
@@ -18,7 +19,7 @@ Function Get-Response ([string]$Prompt,[int]$NumberPossibleAnswers) {
        } #End while
 }
 
-Connect-MgGraph -NoWelcome -Scopes ChannelMessage.ReadWrite, Team.ReadBasic.All, TeamMember.Read.All, ChannelSettings.Read.All
+Connect-MgGraph -NoWelcome -Scopes ChannelMessage.ReadWrite, Team.ReadBasic.All, ChannelMessage.Read.All, TeamMember.Read.All, ChannelSettings.Read.All
 
 $CheckTeam = Read-Host "What team is the channel to clear out in?"
 Write-Host ("Searching for the {0} team" -f $CheckTeam)
@@ -88,7 +89,7 @@ if ($Decision -eq 0) {
             }
         }
         # Now remove the message
-        $Status =    -TeamId $Team.Id -ChannelId $SelectedChannel.Id `
+        $Status = Invoke-MgSoftTeamChannelMessageDelete -TeamId $Team.Id -ChannelId $SelectedChannel.Id `
             -ChatMessageId $Message.Id -ErrorAction SilentlyContinue
         $MessagesRemoved++
         # Brief sleep to prevent throttling

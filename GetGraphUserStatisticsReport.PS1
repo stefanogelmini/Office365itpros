@@ -1,15 +1,12 @@
 # GetGraphUserStatisticsReport.PS1
 # A sample script showing how to gather user activity information from the Graph and assemble it into one report
 # V1.3 2-Sep-2020
-# V2.1 3-Aug-2022 (Increased date range for activities to go back 180 days instead of 90)
-# https://github.com/12Knocksinna/Office365itpros/blob/master/GetGraphUserStatisticsReport.PS1# V2.1 3-Aug-2022 (Increased date range for activities to go back 180 days instead of 90)
-# Tony Redmond
-#
-# https://github.com/12Knocksinna/Office365itpros/blob/master/GetGraphUserStatisticsReportV2.PS1
-# Note: Guest user activity is not recorded by the Graph - only tenant accounts are processed
-
 # V2.0 is the transitition from PowerShell lists to hash tables as the repository for data extracted from the Microsoft Graph
 # with the intention of faster access for large data sets (more than 1,000 accounts in a tenant).
+# V2.1 3-Aug-2022 (Increased date range for activities to go back 180 days instead of 90)
+# Github link: https://github.com/12Knocksinna/Office365itpros/blob/master/GetGraphUserStatisticsReport.PS1
+# Note: Guest user activity is not recorded by the Graph - only tenant accounts are processed
+
 # There isn't a lot of error checking/handling in this script because it's designed to show the principles of how to grab and 
 # process Office 365 usage data from the Graph rather than being something that meets the needs of everyone. Have fun editing it!
 
@@ -147,11 +144,12 @@ $Uri = "https://graph.microsoft.com/V1.0/users?`$select=displayName,userPrincipa
 [array]$UserSignInData = $SignInData | Where-Object {$_.UserType -eq "Member"} | Sort-Object UserPrincipalName -Unique
 # Update the user sign in hash table
 ForEach ($U in $UserSignInData) {
-     If ($U.SignInActivity.LastSignInDateTime) {
-        $LastSignInDate = Get-Date($U.SignInActivity.LastSignInDateTime) -format g
-        $UserSignIns.Add([String]$U.UserPrincipalName, $LastSignInDate) }
-     Else {
-        $UserSignIns.Add([String]$U.UserPrincipalName,$Null) }
+   If ($U.SignInActivity.LastSuccessfulSignInDateTime) {
+      $LastSignInDate = Get-Date($U.SignInActivity.LastSuccessfulSignInDateTime) -format 'dd-MMM-yyyy HH:mm'
+      $UserSignIns.Add([String]$U.UserPrincipalName, $LastSignInDate) 
+   } Else {
+      $UserSignIns.Add([String]$U.UserPrincipalName,$Null) 
+   }
 }
 
 $StartTime2 = Get-Date
@@ -272,7 +270,8 @@ ForEach ($Y in $YammerUsage) {
       $YammerDaysSinceActive = "N/A" }
    Else {
       $YammerLastActivity = Get-Date($Y."Last Activity Date") -format "dd-MMM-yyyy" 
-      $YammerDaysSinceActive = (New-TimeSpan ($YammerLastActivity)).Days }
+      $YammerDaysSinceActive = (New-TimeSpan ($YammerLastActivity)).Days 
+   }
   $ReportLine  = [PSCustomObject] @{          
      YUPN             = $Y."User Principal Name"
      YDisplayName     = $Y."Display Name"
@@ -281,7 +280,8 @@ ForEach ($Y in $YammerUsage) {
      YPostedCount     = [int]$Y."Posted Count"
      YReadCount       = [int]$Y."Read Count"
      YLikedCount      = [int]$Y."Liked Count"
-     YRecordType      = "Yammer Usage"}
+     YRecordType      = "Yammer Usage"
+   }
    [Array]$ExistingData = $DataTable[$Y."User Principal Name"] 
    [Array]$NewData = $ExistingData + $ReportLine
    $DataTable[$Y."User Principal Name"] = $NewData }

@@ -2,6 +2,7 @@
 # Remove an individual service plan from a SKU assigned to Microsoft 365 accounts
 # Version of https://github.com/12Knocksinna/Office365itpros/blob/master/RemoveServicePlan.PS1 using the Azure AD cmdlets instead of MSOL cmdlets to remove service plans from licenses.
 # https://github.com/12Knocksinna/Office365itpros/blob/master/RemoveServicePlan2.PS1
+# Note: The AzureAD and MSOL modules were deprecated by Microsoft on 30-March-2024
 
 Function Get-Response ([string]$Prompt,[int]$NumberPossibleAnswers) {
 # Help function to prompt a question and get a response
@@ -18,7 +19,7 @@ Function Get-Response ([string]$Prompt,[int]$NumberPossibleAnswers) {
 }
 
 # Check loaded modules
-$ModulesLoaded = Get-Module | Select Name
+$ModulesLoaded = Get-Module | Select-Object Name
 If (!($ModulesLoaded -match "ExchangeOnlineManagement")) {Write-Host "Please connect to the Exchange Online Management module and then restart the script"; break}
 If (!($ModulesLoaded -like "*AzureAD*")) {Write-Host "Please connect to the Azure Active Directory module and then restart the script"; break}
 # We seem to be fully connected to the necessary modules so we can proceed
@@ -38,7 +39,7 @@ Write-Host "Which Office 365 product do you want to remove a service plan from?"
        [string]$SelectedSku = $Skus[$i].SkuPartNumber
        [string]$SelectedSkuId = $Skus[$i].SkuId
        Write-Host "OK. Selected product is" $SelectedSku
-       $ServicePlans = $Skus[$i].ServicePlans | Select ServicePlanName, ServicePlanId | Sort ServicePlanName
+       $ServicePlans = $Skus[$i].ServicePlans | Select-Object ServicePlanName, ServicePlanId | Sort-Object ServicePlanName
     } Elseif ($Answer -eq 0) { #Abort
        Write-Host "Script stopping..." ; break 
     }
@@ -63,7 +64,8 @@ Write-Host "Which Service plan do you want to remove from" $SelectedSku; [int]$i
 # We need to know what target accounts to remove the service plan from. In this case, we use Get-ExoMailbox to find a bunch of user mailboxes, mostly because we can use a server-side
 # filter. You can use whatever other technique to find target accounts (like Get-AzureADUser). The important thing is to feed the object identifier for the account to Get-MsolUser to 
 # retrieve license information
-[array]$Mbx = (Get-ExoMailbox -RecipientTypeDetails UserMailbox -Filter {Office -eq "Dublin"} -ResultSize Unlimited | Select DisplayName, UserPrincipalName, Alias, ExternalDirectoryObjectId)
+[array]$Mbx = Get-ExoMailbox -RecipientTypeDetails UserMailbox -ResultSize Unlimited | `
+   Select-Object DisplayName, UserPrincipalName, Alias, ExternalDirectoryObjectId
 [int]$LicensesRemoved = 0
 Write-Host ("Total of {0} matching mailboxes found" -f $mbx.count) -Foregroundcolor red
 
@@ -78,7 +80,7 @@ ForEach ($M in $Mbx) {
           If ($License.SkuId -eq $SelectedSkuId)
           { # We match the service plan to remove
             # Set up license options to remove the selected service plan ($ServicePlanName) from the SKU ($SelectedSkuId)
-            $License.DisabledPlans = ($License.DisabledPlans + $ServicePlanId | Sort -Unique)
+            $License.DisabledPlans = ($License.DisabledPlans + $ServicePlanId | Sort-Object -Unique)
             $UserLicenses.AddLicenses += $License
             Write-Host ("Removing service plan {0} from SKU {1} for account {2}" -f $ServicePlanName, $SelectedSKUId, $M.DisplayName) -foregroundcolor Red
             Set-AzureADUserLicense -ObjectId $User.ObjectId -AssignedLicenses $userLicenses
