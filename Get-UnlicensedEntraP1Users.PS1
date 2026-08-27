@@ -1,0 +1,232 @@
+# Get-UnlicensedEntraP1Users.PS1
+# A script to show how to determine the set of member user accounts which are covered by Conditional Access policies but do not have an
+# Entra P1 or P2 license assigned. The script uses the Microsoft Graph PowerShell SDK to fetch the required data.
+
+# V1.0 12-Aug-2026
+
+# GitHub Link: https://github.com/12Knocksinna/Office365itpros/blob/master/Get-UnlicensedEntraP1Users.PS1
+# Associated article: https://office365itpros.com/2026/08/18/find-entra-p1-accounts-to-license/
+
+# Permissions required to run this script:
+# - Policy.Read.All:        Read conditional access policy settings
+# - User.Read.All:          Read  user information like identity, display name, UPN, and assigned licenses
+# - GroupMember.Read.All:   Read group information
+
+Function Get-RoleMembers {
+    param (
+        [array]$Roles
+    )
+    # Function to fetch the members of the specified directory roles.
+    [array]$AllRoleMembers = $null
+    Write-Output "Fetching membership for included directory roles" 
+
+    ForEach ($Role in $Roles) {
+        [array]$RoleMembers = $null
+        $RoleId = Get-MgDirectoryRole -Filter "RoleTemplateId eq '$Role'" | Select-Object -ExpandProperty Id
+        Try {
+            [array]$RoleMembers = Get-MgDirectoryRoleMember -DirectoryRoleId $RoleId -All -ErrorAction Stop | Select-Object -ExpandProperty Id
+            $AllRoleMembers += $RoleMembers
+        } Catch {
+            # Error is propbably because a role is not used in the tenant, so don't worry about it
+            # Write-Host ("Error fetching members of role {0}: {1}" -f $Role, $_.Exception.Message) -ForegroundColor Red
+            Continue
+        }
+    }
+
+    $AllRoleMembers = $AllRoleMembers | Sort-Object -Unique
+    return $AllRoleMembers
+}
+
+function Get-GroupMembers {
+    param (
+        [array]$Groups
+    )
+    # Function to fetch the members of the specified groups.
+    [array]$AllGroupMembers = $null
+    Write-Output "Fetching membership for included groups" 
+
+    ForEach ($GroupId in $Groups) {
+        [array]$GroupMembers = $null
+        Try {
+            [array]$GroupMembers = Get-MgGroupTransitiveMemberAsUser -GroupId $GroupId -All -ErrorAction Stop | Select-Object -ExpandProperty Id
+            $AllGroupMembers += $GroupMembers
+            $GroupDisplayName = (Get-MgGroup -GroupId $GroupId).DisplayName
+            Write-Output ("Policy includes the {0} group with {1} members" -f $GroupDisplayName, $GroupMembers.Count) 
+            $GroupDisplayNames += $GroupDisplayName
+        } Catch {
+            Write-Output ("Error fetching members of group {0}: {1}" -f $GroupId, $_.Exception.Message) 
+            Continue
+        }
+    }
+
+    $AllGroupMembers = $AllGroupMembers | Sort-Object -Unique
+    $GroupDisplayNames = $GroupDisplayNames | Sort-Object -Unique
+    $GroupDisplayNamesOutput = $GroupDisplayNames -join ", "
+    
+    Write-Output ("Total of {0} unique member users found in the included groups: {1}" -f $AllGroupMembers.Count, ($GroupDisplayNames -join ", ")) -ForegroundColor Yellow
+    return [PSCustomObject]@{
+        Members           = $AllGroupMembers
+        GroupDisplayNames = $GroupDisplayNames -join ", "
+    }
+}
+
+Connect-MgGraph -Scopes "Policy.Read.All", "User.ReadBasic.All", "GroupMember.Read.All" -NoWelcome
+
+# The first step is to check number of users covered by CA policies
+# Start by finding the set of enabled Conditional Access policies...
+Write-Output "Fetching enabled Conditional Access policies..." 
+[array]$Policies = Get-MgIdentityConditionalAccessPolicy -All -Filter "state eq 'enabled'"
+# Find licensed users in the tenant (excluding guests and disabled accounts used for shared mailboxes etc.)
+Write-Output "Fetching licensed member users in the tenant..." 
+[array]$Users = Get-MgUser -Filter "assignedLicenses/`$count ne 0 and userType eq 'Member' and accountEnabled ne false" `
+    -ConsistencyLevel Eventual -CountVariable Count -Select Id,DisplayName,UserPrincipalName,accountEnabled -PageSize 500 -All
+
+Write-Output ("Total of {0} licensed member user accounts found in tenant" -f $Users.count)
+$Report = [System.Collections.Generic.List[object]]::new()
+[array]$TotalUsersFound = $null
+
+ForEach ($Policy in $Policies) {
+    $Groups = $null
+    [array]$PolicyIncludedUsers = $Policy.Conditions.Users.IncludeUsers
+    [array]$PolicyExcludedUsers = $Policy.Conditions.Users.ExcludeUsers
+
+    Write-Output ("Processing policy {0}" -f $Policy.DisplayName) 
+
+    If ($PolicyIncludedUsers -contains 'All') {
+        [array]$ExcludedGroupUserIds = $null
+        If ($PolicyExcludedUsers) {
+            $ExcludedGroupUserIds += $PolicyExcludedUsers | Where-Object { $_ -ne 'GuestsOrExternalUsers' }
+        }                       
+        If ($Policy.Conditions.Users.ExcludeGroups) {
+            ForEach ($GroupId in $Policy.Conditions.Users.ExcludeGroups) {
+                [array]$Members = Get-MgGroupTransitiveMemberAsUser -GroupId $GroupId -All | Select-Object -ExpandProperty Id
+                $ExcludedGroupUserIds += $Members
+            }
+        }
+        $ExcludedGroupUserIds = $ExcludedGroupUserIds | Select-Object -Unique
+        $UsersInScope = $Users.Count - $ExcludedGroupUserIds.Count
+        $IncludedUserIds = $Users.Id | Where-Object { $_ -notin $ExcludedGroupUserIds }
+        [array]$TotalUsersFound += $IncludedUserIds
+
+        Write-Output ("The {0} policy targets all users" -f $Policy.DisplayName) 
+        If ($ExcludedGroupUserIds) {
+            Write-Output ("Member users excluded from policy: {0}" -f $ExcludedGroupUserIds.Count) 
+        }
+        Write-Output ("Member users in scope: {0}" -f $UsersInScope)
+
+    } Else { # Policy focuses on specific groups, users, or directory roles
+        $AllRoleMembers = $null
+        $AllGroupMembers = $null
+        If ($Policy.Conditions.Users.IncludeGroups) {
+            [array]$AllGroupMembers = $null
+            [array]$Global:GroupDisplayNamesOutput = $null
+            $AllGroupMembers = Get-GroupMembers -Groups $Policy.Conditions.Users.IncludeGroups 
+            $Groups = $AllGroupMembers.GroupDisplayNames
+            $AllGroupMembers = $AllGroupMembers.Members 
+        }
+        [array]$IncludedRoles = $Policy.Conditions.Users.IncludeRoles
+        If ($IncludedRoles) {
+            [array]$AllRoleMembers = $null
+            $AllRoleMembers = Get-RoleMembers -Roles $IncludedRoles
+        }
+      
+        # Add group members to the overall set of users
+        [array]$IncludedUserIds = $PolicyIncludedUsers | Where-Object { $_ -notin $AllGroupMembers }   
+        If ($AllGroupMembers) {
+            [array]$IncludedUserIds += $AllGroupMembers
+        }
+        # Add role members
+        If ($AllRoleMembers) {
+            [array]$IncludedUserIds += $AllRoleMembers
+        }   
+        # Remove duplicates from the list of users in scope for this policy
+        $IncludedUserIds = $IncludedUserIds | Sort-Object -Unique
+        Write-Output ("{1} member users in scope for policy {0}" -f $Policy.DisplayName, $AllGroupMembers.Count) 
+        [array]$TotalUsersFound += $IncludedUserIds
+    }
+
+    $ReportLine = [PSCustomObject]@{
+        PolicyName      = $Policy.DisplayName
+        UsersInScope    = $IncludedUserIds.Count
+        UserIds         = $IncludedUserIds
+        Groups          = $Groups
+    }
+    $Report.Add($ReportLine) 
+}
+
+$TotalUsersFound = $TotalUsersFound | Sort-Object -Unique
+Write-Output ("A total of {0} unique member user accounts are calculated to come within the scope of enabled Conditional Access policies" -f $TotalUsersFound.Count) 
+
+# Define the service plan identifiers for Entra P1 and P2 licenses
+$EntraPlan1 = "41781fb2-bc02-4b7c-bd55-b576c07bb09d"
+$EntraPlan2 = "eec0eb4f-6444-4f95-aba0-50c24d67f998"
+
+# Find any product subscriptions in the tenant that include Entra P1 or P2 licenses
+[array]$EntraSkus = Get-MgSubscribedSku -All | Where-Object {
+    $_.ServicePlans.ServicePlanId -contains $EntraPlan1 -or
+    $_.ServicePlans.ServicePlanId -contains $EntraPlan2 }  | Select-Object SkuId, SkuPartNumber, PrepaidUnits
+
+Write-Output ""
+Write-Output "Product SKUs with entitlement to Entra P1 or P2 licenses in the tenant:"
+$EntraSkus | Format-Table SkuId, SkuPartNumber, @{n="Prepaid Units"; e={$_.PrepaidUnits.Enabled}} -AutoSize
+
+# Fetch licensed users with a license that includes an Entra P1 or P2 service plan
+[array]$LicensedP1Users = Get-MgUser -ConsistencyLevel Eventual -CountVariable Licenses -PageSize 500 -All `
+    -Property Id, displayName, userPrincipalName, assignedPlans `
+    -Filter "(assignedPlans/any(s:s/servicePlanId eq $EntraPlan2) or assignedPlans/any(s:s/servicePlanId eq $EntraPlan1)) and userType eq 'Member' and accountEnabled ne false"
+    
+# Check that the service plan is enabled and not deleted because it was proviously assighned and then removed
+$ListCALicensedUsers = [System.Collections.Generic.List[object]]::new()
+ForEach ($P1User in $LicensedP1Users) {
+   $CheckPlan = $P1User.assignedPlans | Where-Object {$_.ServicePlanId -eq $EntraPlan1} | Select-Object -ExpandProperty CapabilityStatus
+   If ($CheckPlan -eq "Enabled") {
+        $ReportLine = [PSCustomObject]@{
+            UserId          = $P1User.Id
+            DisplayName     = $P1User.DisplayName
+            UserPrincipalName = $P1User.UserPrincipalName
+        }
+        $ListCALicensedUsers.Add($ReportLine)
+   }    
+}
+
+If ($EntraSkus) {   
+    [int]$TotalP1Licenses = ($EntraSkus.PrepaidUnits.Enabled | Measure-Object -Sum | Select-Object -ExpandProperty Sum)
+    Write-Output ("Products with entitlement to {0} Entra P1 licenses are available. The licenses are assigned to {1} user accounts." -f $TotalP1Licenses, $ListCALicensedUsers.Count) 
+}
+
+# Get the set of users who aren't licensed for Entra P1 or P2 but are within the scope for at least one CA policy
+[array]$UsersNeedingEntraP1 = $TotalUsersFound | Where-Object { $_ -notin $ListCALicensedUsers.UserId }
+# Create an array holding the user details for those users (most admins aren't great at reading GUIDs). We drop any disabled accounts from the list because they are not relevant to the report.
+[array]$UsersWithoutEntraP1Licenses = $Users | Where-Object { $_.Id -in $UsersNeedingEntraP1 -and $_.accountEnabled -eq $True } | `
+    Select-Object DisplayName, UserPrincipalName, Id | Sort-Object DisplayName
+
+Write-Output ""
+Write-Output ("{0} user member accounts should be assigned Entra P1 licenses because they come within the scope of Entra ID conditional access policies" -f $UsersWithoutEntraP1Licenses.Count)
+Write-Output ""
+$UsersWithoutEntraP1Licenses | Format-Table -AutoSize
+
+Write-Output ""
+# Generate report file
+If (Get-Module ImportExcel -ListAvailable) {
+    $ExcelGenerated = $True
+    Import-Module ImportExcel -ErrorAction SilentlyContinue
+    $OutputXLSXFile = ((New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path) + "\Unlicensed Entra P1 Accounts.xlsx"
+    Remove-Item -Path $OutputXLSXFile -ErrorAction SilentlyContinue
+    $UsersWithoutEntraP1Licenses | Export-Excel -Path $OutputXLSXFile -WorksheetName "Unlicensed Entra P1 Accounts" -Title ("Unlicensed Entra P1 Accounts {0}" -f (Get-Date -format 'dd-MMM-yyyy')) -TitleBold -TableName "UnlicensedEntraP1Accounts" 
+} Else {
+    $OutputCSVFile = ((New-Object -ComObject Shell.Application).Namespace('shell:Downloads').Self.Path) + "\Unlicensed Entra P1 Accounts.csv"
+    Remove-Item -Path $OutputCSVFile -ErrorAction SilentlyContinue
+    $UsersWithoutEntraP1Licenses | Export-Csv -Path $OutputCSVFile -NoTypeInformation -Encoding Utf8
+}
+  
+If ($ExcelGenerated) {
+  Write-Output ("An Excel workbook containing user accounts that are not licensed for Entra P1 accounts is available in {0}" -f $OutputXLSXFile)
+} Else {
+  Write-Output ("A CSV file containing user accounts that are not licensed for Entra P1 accounts is available in {0}" -f $OutputCSVFile)
+}
+
+# An example script used to illustrate a concept. More information about the topic can be found in the Microsoft 365 for IT Pros eBook https://gum.co/O365IT/
+# and/or a relevant article on https://office365itpros.com or https://www.practical365.com. See our post about the Microsoft 365 for IT Pros repository # https://office365itpros.com/office-365-github-repository/ for information about the scripts we write.
+
+# Do not use our scripts in production until you are satisfied that the code meets the need of your organization. Never run any code downloaded from the Internet without
+# first validating the code in a non-production envir
